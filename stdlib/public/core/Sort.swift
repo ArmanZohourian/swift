@@ -560,70 +560,96 @@ extension UnsafeMutableBufferPointer {
   ///   `min(runs[i].count, runs[i - 1].count)` uninitialized elements.
   /// - Precondition: The ranges in `runs` must be consecutive, such that for
   ///   any i, `runs[i].upperBound == runs[i + 1].lowerBound`.
-  @discardableResult
+//  @discardableResult
+//  @inlinable
+//  internal mutating func _mergeTopRuns(
+//    _ runs: inout [Range<Index>],
+//    buffer: UnsafeMutablePointer<Element>,
+//    by areInIncreasingOrder: (Element, Element) throws -> Bool
+//  ) rethrows -> Bool {
+//    // The invariants for the `runs` array are:
+//    // (a) - for all i in 2..<runs.count:
+//    //         - runs[i - 2].count > runs[i - 1].count + runs[i].count
+//    // (b) - for c = runs.count - 1:
+//    //         - runs[c - 1].count > runs[c].count
+//    //
+//    // Loop until the invariant is satisfied for the top four elements of
+//    // `runs`. Because this method is called for every added run, and only
+//    // the top three runs are ever merged, this guarantees the invariant holds
+//    // for the whole array.
+//    //
+//    // At all times, `runs` is one of the following, where W, X, Y, and Z are
+//    // the counts of their respective ranges:
+//    // - [ ...?, W, X, Y, Z ]
+//    // - [ X, Y, Z ]
+//    // - [ Y, Z ]
+//    //
+//    // If W > X + Y, X > Y + Z, and Y > Z, then the invariants are satisfied
+//    // for the entirety of `runs`.
+//    
+//    // The invariant is always in place for a single element.
+//    while runs.count > 1 {
+//      var lastIndex = runs.count - 1
+//      
+//      // Check for the three invariant-breaking conditions, and break out of
+//      // the while loop if none are met.
+//      if lastIndex >= 3 &&
+//        (runs[lastIndex - 3].count <=
+//          runs[lastIndex - 2].count + runs[lastIndex - 1].count)
+//      {
+//        // Second-to-last three runs do not follow W > X + Y.
+//        // Always merge Y with the smaller of X or Z.
+//        if runs[lastIndex - 2].count < runs[lastIndex].count {
+//          lastIndex -= 1
+//        }
+//      } else if lastIndex >= 2 &&
+//        (runs[lastIndex - 2].count <=
+//          runs[lastIndex - 1].count + runs[lastIndex].count)
+//      {
+//        // Last three runs do not follow X > Y + Z.
+//        // Always merge Y with the smaller of X or Z.
+//        if runs[lastIndex - 2].count < runs[lastIndex].count {
+//          lastIndex -= 1
+//        }
+//      } else if runs[lastIndex - 1].count <= runs[lastIndex].count {
+//        // Last two runs do not follow Y > Z, so merge Y and Z.
+//        // This block is intentionally blank--the merge happens below.
+//      } else {
+//        // All invariants satisfied!
+//        break
+//      }
+//      
+//      // Merge the runs at `i` and `i - 1`.
+//      try unsafe _mergeRuns(
+//        &runs, at: lastIndex, buffer: buffer, by: areInIncreasingOrder)
+//    }
+//
+//    return true
+//  }
+  @discardableResult  // legacy ABI pattern
   @inlinable
-  internal mutating func _mergeTopRuns(
+  internal mutating func _mergeTopRunsPowerSort(
     _ runs: inout [Range<Index>],
+    _ powers: inout [Int],
+    newRunLength: Int,
+    totalLength: Int,
     buffer: UnsafeMutablePointer<Element>,
     by areInIncreasingOrder: (Element, Element) throws -> Bool
   ) rethrows -> Bool {
-    // The invariants for the `runs` array are:
-    // (a) - for all i in 2..<runs.count:
-    //         - runs[i - 2].count > runs[i - 1].count + runs[i].count
-    // (b) - for c = runs.count - 1:
-    //         - runs[c - 1].count > runs[c].count
-    //
-    // Loop until the invariant is satisfied for the top four elements of
-    // `runs`. Because this method is called for every added run, and only
-    // the top three runs are ever merged, this guarantees the invariant holds
-    // for the whole array.
-    //
-    // At all times, `runs` is one of the following, where W, X, Y, and Z are
-    // the counts of their respective ranges:
-    // - [ ...?, W, X, Y, Z ]
-    // - [ X, Y, Z ]
-    // - [ Y, Z ]
-    //
-    // If W > X + Y, X > Y + Z, and Y > Z, then the invariants are satisfied
-    // for the entirety of `runs`.
-    
-    // The invariant is always in place for a single element.
-    while runs.count > 1 {
-      var lastIndex = runs.count - 1
-      
-      // Check for the three invariant-breaking conditions, and break out of
-      // the while loop if none are met.
-      if lastIndex >= 3 &&
-        (runs[lastIndex - 3].count <=
-          runs[lastIndex - 2].count + runs[lastIndex - 1].count)
-      {
-        // Second-to-last three runs do not follow W > X + Y.
-        // Always merge Y with the smaller of X or Z.
-        if runs[lastIndex - 2].count < runs[lastIndex].count {
-          lastIndex -= 1
-        }
-      } else if lastIndex >= 2 &&
-        (runs[lastIndex - 2].count <=
-          runs[lastIndex - 1].count + runs[lastIndex].count)
-      {
-        // Last three runs do not follow X > Y + Z.
-        // Always merge Y with the smaller of X or Z.
-        if runs[lastIndex - 2].count < runs[lastIndex].count {
-          lastIndex -= 1
-        }
-      } else if runs[lastIndex - 1].count <= runs[lastIndex].count {
-        // Last two runs do not follow Y > Z, so merge Y and Z.
-        // This block is intentionally blank--the merge happens below.
-      } else {
-        // All invariants satisfied!
-        break
-      }
-      
-      // Merge the runs at `i` and `i - 1`.
+    guard !runs.isEmpty else { return true }
+
+    let s1 = runs[runs.count - 1].lowerBound
+    let n1 = runs[runs.count - 1].count
+    let power = unsafe _powerLoop(s1: s1, n1: n1, n2: newRunLength, n: totalLength)
+
+    while runs.count > 1 && powers[powers.count - 2] > power {
       try unsafe _mergeRuns(
-        &runs, at: lastIndex, buffer: buffer, by: areInIncreasingOrder)
+        &runs, at: runs.count - 1, buffer: buffer,
+        by: areInIncreasingOrder)
+      powers.remove(at: powers.count - 2)
     }
 
+    powers[powers.count - 1] = power
     return true
   }
 
@@ -638,6 +664,20 @@ extension UnsafeMutableBufferPointer {
   ///   `min(runs[i].count, runs[i - 1].count)` uninitialized elements.
   /// - Precondition: The ranges in `runs` must be consecutive, such that for
   ///   any i, `runs[i].upperBound == runs[i + 1].lowerBound`.
+//  @discardableResult
+//  @inlinable
+//  internal mutating func _finalizeRuns(
+//    _ runs: inout [Range<Index>],
+//    buffer: UnsafeMutablePointer<Element>,
+//    by areInIncreasingOrder: (Element, Element) throws -> Bool
+//  ) rethrows -> Bool {
+//    while runs.count > 1 {
+//      try unsafe _mergeRuns(
+//        &runs, at: runs.count - 1, buffer: buffer, by: areInIncreasingOrder)
+//    }
+//
+//    return true
+//  }
   @discardableResult
   @inlinable
   internal mutating func _finalizeRuns(
@@ -646,10 +686,13 @@ extension UnsafeMutableBufferPointer {
     by areInIncreasingOrder: (Element, Element) throws -> Bool
   ) rethrows -> Bool {
     while runs.count > 1 {
+      var i = runs.count - 1
+      if runs.count >= 3 && runs[runs.count - 3].count < runs[runs.count - 1].count {
+        i = runs.count - 2
+      }
       try unsafe _mergeRuns(
-        &runs, at: runs.count - 1, buffer: buffer, by: areInIncreasingOrder)
+        &runs, at: i, buffer: buffer, by: areInIncreasingOrder)
     }
-
     return true
   }
   
@@ -678,6 +721,7 @@ extension UnsafeMutableBufferPointer {
     _ = try unsafe Array<Element>(unsafeUninitializedCapacity: count / 2) {
       buffer, _ in
       var runs: [Range<Index>] = []
+      var powers: [Int] = []
       
       var start = startIndex
       while start < endIndex {
@@ -699,9 +743,14 @@ extension UnsafeMutableBufferPointer {
         
         // Append this run and merge down as needed to maintain the `runs`
         // invariants.
+        try unsafe _mergeTopRunsPowerSort(
+          &runs, &powers,
+          newRunLength: end - start,
+          totalLength: count,
+          buffer: buffer.baseAddress!,
+          by: areInIncreasingOrder)
         runs.append(start..<end)
-        try unsafe _mergeTopRuns(
-          &runs, buffer: buffer.baseAddress!, by: areInIncreasingOrder)
+        powers.append(0)
         start = end
       }
       
@@ -710,4 +759,26 @@ extension UnsafeMutableBufferPointer {
       _internalInvariant(runs.count == 1, "Didn't complete final merge")
     }
   }
+  
+  @inlinable
+  internal func _powerLoop(
+    s1: Int, n1: Int, n2: Int, n: Int
+  ) -> Int {
+    var a = 2 &* s1 &+ n1
+    var b = a &+ n1 &+ n2
+    var result = 0
+    while true {
+      result &+= 1
+      if a >= n {
+        a &-= n
+        b &-= n
+      } else if b >= n {
+        break
+      }
+      a &<<= 1
+      b &<<= 1
+    }
+    return result
+  }
+  
 }
